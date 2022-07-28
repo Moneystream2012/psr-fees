@@ -2,6 +2,8 @@
 
 namespace App\Command;
 
+use App\Infra\Client\ApiClient;
+use GuzzleHttp\Exception\GuzzleException;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputArgument;
@@ -46,13 +48,13 @@ class FeesCommand extends Command
         ];
 
     /**
-     * @param string $exchangeRatesApiProvider
+     * @param string $currencies
      * @param string $currency
      * @return mixed
      */
-    protected static function currencyRate(string $exchangeRatesApiProvider, string $currency): mixed
+    protected static function currencyRate(string $currencies, string $currency): mixed
     {
-        return @json_decode(file_get_contents($exchangeRatesApiProvider), true)['rates'][$currency];
+        return @json_decode($currencies, true)['rates'][$currency];
     }
 
     /**
@@ -63,9 +65,9 @@ class FeesCommand extends Command
      */
     protected static function isEu(string $binListApiProvider, string $transactionBin): bool
     {
-        $binResults = file_get_contents($binListApiProvider . $transactionBin);
+        $binResults = ApiClient::getResourceByPath($binListApiProvider, $transactionBin);
         if (!$binResults) {
-            throw new \Exception('No such bin provided!');
+            throw new \InvalidArgumentException('No such bin provided!');
         }
 
         $r = json_decode($binResults);
@@ -76,12 +78,21 @@ class FeesCommand extends Command
      * @param string $file
      * @param string $binListApiProvider
      * @param string $exchangeRatesApiProvider
+     * @param string $apiKey
+     *
      * @return array
+     *
+     * @throws GuzzleException
      */
-    protected static function calculate(string $file, string $binListApiProvider, string $exchangeRatesApiProvider): array
-    {
+    protected function calculate(
+        string $file,
+        string $binListApiProvider,
+        string $exchangeRatesApiProvider,
+        string $apiKey
+    ): array {
         $fees = [];
         $binErrors = [];
+        $currencies = ApiClient::getResourceByUri($exchangeRatesApiProvider, ['apikey' => $apiKey]);
 
         foreach (explode("\n", file_get_contents($file)) as $row) {
             if (empty($row)) return [];
@@ -90,12 +101,12 @@ class FeesCommand extends Command
 
             try {
                 $isEu = self::isEu($binListApiProvider, $transaction->bin);
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $binErrors[] = $transaction->bin;
                 continue;
             }
 
-            $rate = self::currencyRate($exchangeRatesApiProvider, $transaction->currency);
+            $rate = self::currencyRate($currencies, $transaction->currency);
             $amountFixed = ($transaction->currency == 'EUR' or $rate == 0)
                 ? $transaction->amount
                 : $transaction->amount / $rate;
@@ -113,6 +124,9 @@ class FeesCommand extends Command
         ;
     }
 
+    /**
+     * @throws GuzzleException
+     */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);
@@ -124,7 +138,12 @@ class FeesCommand extends Command
 
         $io->note(sprintf('You passed an transactions list filename: `%s`', $file));
 
-        $result = self::calculate($file, 'https://lookup.binlist.net/', 'https://api.exchangeratesapi.io/latest');
+        $result = $this->calculate(
+            $file,
+            'https://lookup.binlist.net',
+            'https://api.apilayer.com/exchangerates_data/latest',
+            '2skUoCGBACbLdsNYg8eJpBITJQRfqcBx'
+        );
 
         $io->success(sprintf('Fee rates calculated successfully for %s transactions.', count($result[0])));
 
